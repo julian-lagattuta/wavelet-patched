@@ -38,6 +38,18 @@ fn next_order(existing: &[StoredFunction]) -> usize {
 /// }
 /// ```
 ///
+/// A region can also be a union of ranges and singleton indices, written in set
+/// notation (`{}` is the empty region):
+/// ```ignore
+/// #[cap(array: uniq @ {0..5, 7..9, i})]
+/// ```
+///
+/// Naming an array more than once unions the regions, which is also how an
+/// array is given both permissions at once:
+/// ```ignore
+/// #[cap(array: uniq @ {0..5}, array: shrd @ {7..9})]
+/// ```
+///
 /// This macro will:
 /// 1. Parse the capability annotations
 /// 2. Run the dfx type checker on the entire program (using check_program_with_options)

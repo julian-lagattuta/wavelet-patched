@@ -76,8 +76,24 @@ fn instantiate_required_delta<L: CapabilityLogic>(
 where
     L::Region: RegionModel,
 {
+    // Capability patterns are matched to arguments by the array parameter they
+    // name, since annotations need not be written in parameter order.
+    let array_params: Vec<&str> = fn_def
+        .params
+        .iter()
+        .filter(|param| is_array_param(&param.ty))
+        .map(|param| param.name.as_str())
+        .collect();
+
     let mut required_delta = Delta::<L::Region>::default();
-    for (cap_pat, arg_var) in fn_def.caps.iter().zip(array_args.iter()) {
+    for cap_pat in &fn_def.caps {
+        let Some(arg_var) = array_params
+            .iter()
+            .position(|name| *name == cap_pat.array)
+            .and_then(|pos| array_args.get(pos))
+        else {
+            continue;
+        };
         let mut instantiated_cap = Cap::<L::Region>::default();
         if let Some(uniq_region) = &cap_pat.uniq {
             let substituted = substitute_region(uniq_region, subst_map);

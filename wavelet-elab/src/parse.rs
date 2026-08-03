@@ -3,7 +3,12 @@
 //! This module parses Rust function definitions with capability annotations
 //! and elaborates them to our IR. The syntax supports:
 //!
-//! - Region annotations: `#[cap(A: shrd @ i..N)]` or `#[cap(A: uniq @ i..N)]`
+//! - Region annotations: `#[cap(A: shrd @ i..N)]` or `#[cap(A: uniq @ i..N)]`.
+//!   A region may also be written in set notation, as a union of intervals and
+//!   singleton indices: `#[cap(A: uniq @ {0..5, 7..9, i})]`, with `{}` denoting
+//!   the empty region. Annotating the same array more than once unions the
+//!   regions, which is how an array is given both permissions at once:
+//!   `#[cap(A: uniq @ {0..5}, A: shrd @ {7..9})]`.
 //! - Fence markers: `fence!();` between statements
 //! - Const generics for array sizes: `const N: usize`
 //!
@@ -32,7 +37,7 @@ use crate::ir::{
     self, ArrayLen, FnDef, FnName, Op, Program, Signedness, Tail, TypedVar, UntypedVar,
 };
 use crate::logic::cap::CapPattern;
-use crate::logic::region::Region;
+use crate::logic::region::{Interval, Region};
 use crate::logic::semantic::solver::Idx;
 
 static LITERAL_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -95,11 +100,13 @@ impl From<syn::Error> for ParseError {
 }
 
 /// Capability annotation: `#[cap(A: shrd @ i..N)]`
+///
+/// The region is a (possibly empty) union of ranges, e.g. `{0..5, 7..9}`.
 #[derive(Debug, Clone)]
 struct CapAnnotation {
     array: String,
     perm: Permission,
-    region: RangeExpr,
+    region: Vec<RangeExpr>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,9 +177,10 @@ fn parse_cap_annotations(attr: &Attribute) -> Result<Vec<CapAnnotation>, ParseEr
             message: "Invalid cap annotation format".to_string(),
         })?;
 
-    // Split by ',' to handle multiple annotations
+    // Split by ',' to handle multiple annotations. Commas nested inside a
+    // bracketed region (e.g. `{0..5, 7..9}`) separate ranges, not annotations.
     let mut annotations = Vec::new();
-    for part in content.split(',') {
+    for part in split_top_level(content, ',') {
         let part = part.trim();
         if part.is_empty() {
             continue;
@@ -207,8 +215,8 @@ fn parse_cap_annotations(attr: &Attribute) -> Result<Vec<CapAnnotation>, ParseEr
             }
         };
 
-        let range_str = rest_parts[1].trim();
-        let region = parse_range_expr(range_str)?;
+        let region_str = rest_parts[1].trim();
+        let region = parse_region_expr(region_str)?;
 
         annotations.push(CapAnnotation {
             array,
@@ -220,19 +228,64 @@ fn parse_cap_annotations(attr: &Attribute) -> Result<Vec<CapAnnotation>, ParseEr
     Ok(annotations)
 }
 
-/// Parse range expression like "i..N" or "0..N"
+/// Split on `delim`, ignoring delimiters nested inside brackets.
+fn split_top_level(s: &str, delim: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+
+    for (offset, c) in s.char_indices() {
+        match c {
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => depth = depth.saturating_sub(1),
+            _ if c == delim && depth == 0 => {
+                parts.push(&s[start..offset]);
+                start = offset + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+/// Parse a region: either a bare range (`i..N`) or a union of ranges in set
+/// notation (`{0..5, 7..9}`). The empty region is written `{}`.
+fn parse_region_expr(s: &str) -> Result<Vec<RangeExpr>, ParseError> {
+    let s = s.trim();
+    let Some(inner) = s.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
+        return Ok(vec![parse_range_expr(s)?]);
+    };
+
+    let mut ranges = Vec::new();
+    for part in split_top_level(inner, ',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        ranges.push(parse_range_expr(part)?);
+    }
+    Ok(ranges)
+}
+
+/// Parse range expression like "i..N" or "0..N". A bare index expression `i`
+/// denotes the singleton range `i..i+1`.
 fn parse_range_expr(s: &str) -> Result<RangeExpr, ParseError> {
     let parts: Vec<&str> = s.split("..").collect();
-    if parts.len() != 2 {
-        return Err(ParseError {
+    match parts.as_slice() {
+        [index] => {
+            let start = parse_index_expr(index.trim())?;
+            let end = IndexExpr::Add(Box::new(start.clone()), Box::new(IndexExpr::Const(1)));
+            Ok(RangeExpr { start, end })
+        }
+        [lo, hi] => Ok(RangeExpr {
+            start: parse_index_expr(lo.trim())?,
+            end: parse_index_expr(hi.trim())?,
+        }),
+        _ => Err(ParseError {
             message: format!("Invalid range: {}", s),
-        });
+        }),
     }
-
-    let start = parse_index_expr(parts[0].trim())?;
-    let end = parse_index_expr(parts[1].trim())?;
-
-    Ok(RangeExpr { start, end })
 }
 
 /// Parse index expression like "i", "10", "i+1", "N-1"
@@ -395,7 +448,12 @@ fn cap_annotation_to_pattern(
     ann: &CapAnnotation,
     array_lens: &HashMap<String, ArrayLen>,
 ) -> Result<CapPattern, ParseError> {
-    let region = Region::from_bounded(ann.region.start.to_idx(), ann.region.end.to_idx());
+    let intervals = ann
+        .region
+        .iter()
+        .map(|range| Interval::bounded(range.start.to_idx(), range.end.to_idx()))
+        .collect();
+    let region = Region::from_intervals(intervals);
     let len = lookup_array_len(array_lens, &ann.array)?;
 
     let cap_pattern = match ann.perm {
@@ -413,6 +471,24 @@ fn cap_annotation_to_pattern(
         },
     };
     Ok(cap_pattern)
+}
+
+/// Fold `extra` into `target`, which must describe the same array. Regions of
+/// the same permission are unioned; the two permissions stay separate.
+fn merge_cap_pattern(target: &mut CapPattern, extra: CapPattern) {
+    target.uniq = union_regions(target.uniq.take(), extra.uniq);
+    target.shrd = union_regions(target.shrd.take(), extra.shrd);
+}
+
+/// Union two optional regions by concatenating their intervals. Overlaps are
+/// left for the region solver to normalize.
+fn union_regions(lhs: Option<Region>, rhs: Option<Region>) -> Option<Region> {
+    match (lhs, rhs) {
+        (Some(lhs), Some(rhs)) => Some(Region::from_intervals(
+            lhs.iter().chain(rhs.iter()).cloned().collect(),
+        )),
+        (lhs, rhs) => lhs.or(rhs),
+    }
 }
 
 /// Parse a function definition and convert to IR.
@@ -491,10 +567,15 @@ pub fn parse_fn_def(input: &str) -> Result<FnDef<UntypedVar>, ParseError> {
         }
     }
 
-    // Convert capability annotations to patterns
-    let mut caps = Vec::new();
+    // Convert capability annotations to patterns, keeping at most one pattern
+    // per array so that later passes can look a capability up by array name.
+    let mut caps: Vec<CapPattern> = Vec::new();
     for ann in &cap_annotations {
-        caps.push(cap_annotation_to_pattern(ann, &array_lens)?);
+        let pattern = cap_annotation_to_pattern(ann, &array_lens)?;
+        match caps.iter_mut().find(|cap| cap.array == pattern.array) {
+            Some(existing) => merge_cap_pattern(existing, pattern),
+            None => caps.push(pattern),
+        }
     }
 
     // Parse body with const generics and array metadata

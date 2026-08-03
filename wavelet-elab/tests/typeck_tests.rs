@@ -343,3 +343,45 @@ fixture_parser_test!(
     },
     backends = ["semantic"],
 );
+
+parser_case!(
+    test_split_region_write,
+    file = "test_files/split_region.rs",
+    fn = "split_write",
+    expect = ok
+);
+
+parser_case!(
+    test_split_region_hole_fails,
+    file = "test_files/split_region.rs",
+    fn = "split_write_hole",
+    expect = err
+);
+
+parser_case!(
+    test_repeated_annotation_is_unioned,
+    file = "test_files/split_region.rs",
+    fn = "repeated_annotation",
+    expect = ok
+);
+
+parser_case!(
+    test_mixed_permissions_on_one_array,
+    file = "test_files/split_region.rs",
+    fn = "mixed_permissions",
+    expect = ok
+);
+
+parser_case!(
+    test_singleton_and_empty_region,
+    file = "test_files/split_region.rs",
+    fn = "singleton_region",
+    expect = ok
+);
+
+fixture_parser_test!(
+    test_caps_matched_to_arrays_by_name,
+    file = "test_files/reordered_caps.rs",
+    entry = "copy_entry",
+    extra = ["copy_all"]
+);
