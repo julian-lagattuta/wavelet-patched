@@ -456,34 +456,49 @@ pub fn apply_idx_substitutions(
 pub fn substitute_permission_with_maps(
     perm: &Permission,
     idx_substitutions: &[(String, Idx)],
+    array_substitutions: &[(String, UntypedVar)],
 ) -> Permission {
     let substituted_region = apply_idx_substitutions(&perm.region, idx_substitutions);
+    let substituted_array = array_substitutions
+        .iter()
+        .find(|(formal, _)| formal == &perm.array.0)
+        .map(|(_, actual)| actual.clone())
+        .unwrap_or_else(|| perm.array.clone());
 
-    Permission::new(
-        perm.fraction.clone(),
-        perm.array.clone(),
-        substituted_region,
-    )
+    Permission::new(perm.fraction.clone(), substituted_array, substituted_region)
 }
 
 pub fn substitute_perm_expr_with_maps(
     expr: &PermExpr,
     idx_substitutions: &[(String, Idx)],
+    array_substitutions: &[(String, UntypedVar)],
 ) -> PermExpr {
     match expr {
         PermExpr::Empty => PermExpr::Empty,
-        PermExpr::Singleton(perm) => {
-            PermExpr::singleton(substitute_permission_with_maps(perm, idx_substitutions))
-        }
+        PermExpr::Singleton(perm) => PermExpr::singleton(substitute_permission_with_maps(
+            perm,
+            idx_substitutions,
+            array_substitutions,
+        )),
         PermExpr::Add(items) => PermExpr::Add(
             items
                 .iter()
-                .map(|item| substitute_perm_expr_with_maps(item, idx_substitutions))
+                .map(|item| {
+                    substitute_perm_expr_with_maps(item, idx_substitutions, array_substitutions)
+                })
                 .collect(),
         ),
         PermExpr::Sub(lhs, rhs) => PermExpr::Sub(
-            Box::new(substitute_perm_expr_with_maps(lhs, idx_substitutions)),
-            Box::new(substitute_perm_expr_with_maps(rhs, idx_substitutions)),
+            Box::new(substitute_perm_expr_with_maps(
+                lhs,
+                idx_substitutions,
+                array_substitutions,
+            )),
+            Box::new(substitute_perm_expr_with_maps(
+                rhs,
+                idx_substitutions,
+                array_substitutions,
+            )),
         ),
     }
 }

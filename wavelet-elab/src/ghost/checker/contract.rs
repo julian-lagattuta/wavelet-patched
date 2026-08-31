@@ -21,12 +21,18 @@ pub struct PermissionContract {
 #[derive(Clone, Debug)]
 pub struct FunctionSignature {
     pub params: Vec<TypedVar>,
+    pub array_params: Vec<TypedVar>,
     pub contract: PermissionContract,
 }
 
-pub fn build_function_signature(params: &[TypedVar], caps: &[CapPattern]) -> FunctionSignature {
+pub fn build_function_signature(
+    params: &[TypedVar],
+    array_params: &[TypedVar],
+    caps: &[CapPattern],
+) -> FunctionSignature {
     FunctionSignature {
         params: params.to_vec(),
+        array_params: array_params.to_vec(),
         contract: contract_from_caps(caps),
     }
 }
@@ -101,20 +107,43 @@ pub fn build_index_substitutions<V: Variable>(
     Ok(substitutions)
 }
 
+pub fn build_array_substitutions<V: Variable>(
+    params: &[TypedVar],
+    args: &[V],
+) -> Result<Vec<(String, UntypedVar)>, String> {
+    if params.len() != args.len() {
+        return Err(format!(
+            "expected {} arguments, received {}",
+            params.len(),
+            args.len()
+        ));
+    }
+
+    let mut substitutions = Vec::new();
+    for (param, arg) in params.iter().zip(args.iter()) {
+        if param.ty.is_array_ref() {
+            substitutions.push((param.name.clone(), UntypedVar(arg.name().to_string())));
+        }
+    }
+    substitutions.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(substitutions)
+}
+
 pub fn instantiate_contract(
     contract: &PermissionContract,
     idx_substitutions: &[(String, Idx)],
+    array_substitutions: &[(String, UntypedVar)],
     fraction_prefix: &str,
 ) -> PermissionContract {
     let fraction_substitutions = contract_fraction_substitutions(contract, fraction_prefix);
 
     PermissionContract {
         sync: substitute_fraction_in_perm_expr(
-            &substitute_perm_expr_with_maps(&contract.sync, idx_substitutions),
+            &substitute_perm_expr_with_maps(&contract.sync, idx_substitutions, array_substitutions),
             &fraction_substitutions,
         ),
         garb: substitute_fraction_in_perm_expr(
-            &substitute_perm_expr_with_maps(&contract.garb, idx_substitutions),
+            &substitute_perm_expr_with_maps(&contract.garb, idx_substitutions, array_substitutions),
             &fraction_substitutions,
         ),
         assumptions: contract
@@ -131,12 +160,15 @@ pub fn instantiate_contract(
 pub fn instantiate_call_contract<V: Variable>(
     signature: &FunctionSignature,
     args: &[V],
+    array_args: &[V],
     site_id: &str,
 ) -> Result<PermissionContract, String> {
     let idx_substitutions = build_index_substitutions(&signature.params, args)?;
+    let array_substitutions = build_array_substitutions(&signature.array_params, array_args)?;
     Ok(instantiate_contract(
         &signature.contract,
         &idx_substitutions,
+        &array_substitutions,
         &call_fraction_prefix(site_id),
     ))
 }

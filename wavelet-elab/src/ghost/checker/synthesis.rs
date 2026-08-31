@@ -34,7 +34,7 @@ pub fn synthesize_permissions<V: Variable>(
     for def in &program.defs {
         signatures.insert(
             def.name.0.clone(),
-            build_function_signature(&def.params, &def.caps),
+            build_function_signature(&def.params, &def.array_params, &def.caps),
         );
     }
 
@@ -329,15 +329,16 @@ impl<'a> FunctionSynthesizer<'a> {
         let joined_1 = self.join_inputs(inputs_1)?;
         let (left_2, right_2, inputs_2) = join_parts(join_stmt_2)?;
 
-        let (func, args, ghost_need, ghost_left, ghost_ret) = match call_stmt {
+        let (func, args, array_args, ghost_need, ghost_left, ghost_ret) = match call_stmt {
             GhostStmt::Call {
                 func,
                 args,
+                array_args,
                 ghost_need,
                 ghost_left,
                 ghost_ret,
                 ..
-            } => (func, args, ghost_need, ghost_left, ghost_ret),
+            } => (func, args, array_args, ghost_need, ghost_left, ghost_ret),
             _ => unreachable!(),
         };
 
@@ -352,7 +353,7 @@ impl<'a> FunctionSynthesizer<'a> {
             .signatures
             .get(&func.0)
             .ok_or_else(|| format!("call to unknown function {}", func.0))?;
-        let contract = instantiate_call_contract(signature, args, &ghost_need.0)?;
+        let contract = instantiate_call_contract(signature, args, array_args, &ghost_need.0)?;
 
         self.bind(left_1, contract.sync.clone());
         self.bind(
@@ -424,6 +425,7 @@ impl<'a> FunctionSynthesizer<'a> {
             GhostTail::TailCall {
                 func,
                 args,
+                array_args,
                 ghost_need,
                 ghost_left,
             } => {
@@ -442,7 +444,8 @@ impl<'a> FunctionSynthesizer<'a> {
                     .signatures
                     .get(&func.0)
                     .ok_or_else(|| format!("tail call to unknown function {}", func.0))?;
-                let contract = instantiate_call_contract(signature, args, &ghost_need.0)?;
+                let contract =
+                    instantiate_call_contract(signature, args, array_args, &ghost_need.0)?;
 
                 self.bind(left_1, contract.sync.clone());
                 self.bind(

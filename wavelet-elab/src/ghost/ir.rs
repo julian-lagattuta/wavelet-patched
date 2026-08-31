@@ -60,6 +60,7 @@ pub enum GhostStmt<V> {
         outputs: Vec<V>,
         func: FnName,
         args: Vec<V>,
+        array_args: Vec<V>,
         ghost_need: GhostVar,
         ghost_left: GhostVar,
         ghost_ret: GhostVar,
@@ -76,6 +77,7 @@ pub enum GhostTail<V> {
     TailCall {
         func: FnName,
         args: Vec<V>,
+        array_args: Vec<V>,
         ghost_need: GhostVar,
         ghost_left: GhostVar,
     },
@@ -104,6 +106,7 @@ impl<V> GhostExpr<V> {
 pub struct GhostFnDef<V> {
     pub name: FnName,
     pub params: Vec<TypedVar>,
+    pub array_params: Vec<TypedVar>,
     pub ghost_params: Vec<GhostVar>,
     pub caps: Vec<crate::logic::cap::CapPattern>,
     pub returns: Ty,
@@ -228,6 +231,7 @@ impl<V: Variable> std::fmt::Display for GhostStmt<V> {
                 outputs,
                 func,
                 args,
+                array_args,
                 ghost_need,
                 ghost_left,
                 ghost_ret,
@@ -239,7 +243,7 @@ impl<V: Variable> std::fmt::Display for GhostStmt<V> {
                     write!(f, "{:?}", out)?;
                 }
                 write!(f, " = {}(", func.0)?;
-                for (i, arg) in args.iter().enumerate() {
+                for (i, arg) in args.iter().chain(array_args).enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -264,11 +268,12 @@ impl<V: Variable> std::fmt::Display for GhostTail<V> {
             GhostTail::TailCall {
                 func,
                 args,
+                array_args,
                 ghost_need,
                 ghost_left,
             } => {
                 write!(f, "{}(", func.0)?;
-                for (i, arg) in args.iter().enumerate() {
+                for (i, arg) in args.iter().chain(array_args).enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }

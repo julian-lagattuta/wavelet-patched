@@ -543,15 +543,16 @@ fn validate_join_join_call<V: Variable>(
     let (left_1, right_1, inputs_1) = join_parts(join_stmt_1)?;
     let (left_2, right_2, inputs_2) = join_parts(join_stmt_2)?;
 
-    let (func, args, ghost_need, ghost_left, ghost_ret) = match call_stmt {
+    let (func, args, array_args, ghost_need, ghost_left, ghost_ret) = match call_stmt {
         GhostStmt::Call {
             func,
             args,
+            array_args,
             ghost_need,
             ghost_left,
             ghost_ret,
             ..
-        } => (func, args, ghost_need, ghost_left, ghost_ret),
+        } => (func, args, array_args, ghost_need, ghost_left, ghost_ret),
         _ => unreachable!(),
     };
     if ghost_need.0 != left_1.0 || ghost_left.0 != left_2.0 {
@@ -565,7 +566,7 @@ fn validate_join_join_call<V: Variable>(
         .get_signature(&func.0)
         .ok_or_else(|| format!("call to unknown function {}", func.0))?
         .clone();
-    let contract = instantiate_call_contract(&signature, args, &ghost_need.0)?;
+    let contract = instantiate_call_contract(&signature, args, array_args, &ghost_need.0)?;
     let need_expr = lookup(ctx, ghost_need)?;
     let left_expr = lookup(ctx, ghost_left)?;
     let ret_expr = lookup(ctx, ghost_ret)?;
@@ -667,6 +668,7 @@ fn validate_tail_after_two_joins<V: Variable>(
         GhostTail::TailCall {
             func,
             args,
+            array_args,
             ghost_need,
             ghost_left,
         } => {
@@ -684,7 +686,7 @@ fn validate_tail_after_two_joins<V: Variable>(
                 .get_signature(&func.0)
                 .ok_or_else(|| format!("tail call to unknown function {}", func.0))?
                 .clone();
-            let contract = instantiate_call_contract(&signature, args, &ghost_need.0)?;
+            let contract = instantiate_call_contract(&signature, args, array_args, &ghost_need.0)?;
             let need_expr = lookup(ctx, ghost_need)?;
             let left_expr = lookup(ctx, ghost_left)?;
             let sync_inputs = join_inputs_expr(ctx, inputs_1)?;

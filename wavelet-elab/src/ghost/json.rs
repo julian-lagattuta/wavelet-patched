@@ -158,6 +158,7 @@ fn serialize_tail<V: Variable + From<GhostVar>>(
         GhostTail::TailCall {
             func: _,
             args,
+            array_args: _,
             ghost_need,
             ghost_left,
         } => {
@@ -296,6 +297,7 @@ fn wrap_stmt<V: Variable + From<GhostVar>>(
             outputs,
             func,
             args,
+            array_args: _,
             ghost_need,
             ghost_left,
             ghost_ret,

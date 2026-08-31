@@ -1,10 +1,11 @@
 //! Tests for the permission checker.
 
 use crate::ghost::fracperms::FractionExpr;
-use crate::ir::UntypedVar;
+use crate::ir::{ArrayLen, Signedness, Ty, TypedVar, UntypedVar};
 use crate::logic::semantic::region_set::RegionSetExpr;
 use crate::logic::semantic::solver::{Atom, Idx, Phi, RealExpr, SmtSolver};
 
+use super::contract::{instantiate_call_contract, FunctionSignature, PermissionContract};
 use super::perm_env::PermissionEnv;
 use super::permission::{PermExpr, Permission};
 use super::program_checker::check_ghost_program_with_verbose;
@@ -15,6 +16,49 @@ fn make_perm(fraction: FractionExpr, array: &str, lo: i64, hi: i64) -> PermExpr 
         UntypedVar(array.to_string()),
         RegionSetExpr::interval(Idx::Const(lo), Idx::Const(hi)),
     ))
+}
+
+#[test]
+fn call_contract_substitutes_array_formals_and_index_parameters() {
+    let signature = FunctionSignature {
+        params: vec![TypedVar {
+            name: "callee_index".to_string(),
+            ty: Ty::Int(Signedness::Unsigned),
+        }],
+        array_params: vec![TypedVar {
+            name: "callee_array".to_string(),
+            ty: Ty::RefUniq {
+                elem: Box::new(Ty::Int(Signedness::Signed)),
+                len: ArrayLen::Const(4),
+            },
+        }],
+        contract: PermissionContract {
+            sync: PermExpr::singleton(Permission::new(
+                FractionExpr::from_int(1),
+                UntypedVar("callee_array".to_string()),
+                RegionSetExpr::interval(Idx::Var("callee_index".to_string()), Idx::Const(4)),
+            )),
+            garb: PermExpr::empty(),
+            assumptions: Vec::new(),
+        },
+    };
+
+    let instantiated = instantiate_call_contract(
+        &signature,
+        &[UntypedVar("caller_index".to_string())],
+        &[UntypedVar("caller_array".to_string())],
+        "test_site",
+    )
+    .unwrap();
+
+    let PermExpr::Singleton(permission) = instantiated.sync else {
+        panic!("expected one instantiated permission");
+    };
+    assert_eq!(permission.array, UntypedVar("caller_array".to_string()));
+    assert_eq!(
+        permission.region,
+        RegionSetExpr::interval(Idx::Var("caller_index".to_string()), Idx::Const(4))
+    );
 }
 
 #[test]

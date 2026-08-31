@@ -348,6 +348,7 @@ pub fn render_ghost_stmt<V: Variable>(stmt: &GhostStmt<V>) -> String {
             outputs,
             func,
             args,
+            array_args,
             ghost_need,
             ghost_left,
             ghost_ret,
@@ -357,7 +358,12 @@ pub fn render_ghost_stmt<V: Variable>(stmt: &GhostStmt<V>) -> String {
                 .map(render_var)
                 .collect::<Vec<_>>()
                 .join(", ");
-            let args_str = args.iter().map(render_var).collect::<Vec<_>>().join(", ");
+            let args_str = args
+                .iter()
+                .chain(array_args)
+                .map(render_var)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!(
                 "{} = {}({}); [need={}, left={}, ret={}]",
                 outputs_str, func.0, args_str, ghost_need.0, ghost_left.0, ghost_ret.0
@@ -377,10 +383,16 @@ pub fn render_ghost_tail<V: Variable>(tail: &GhostTail<V>) -> String {
         GhostTail::TailCall {
             func,
             args,
+            array_args,
             ghost_need,
             ghost_left,
         } => {
-            let args_str = args.iter().map(render_var).collect::<Vec<_>>().join(", ");
+            let args_str = args
+                .iter()
+                .chain(array_args)
+                .map(render_var)
+                .collect::<Vec<_>>()
+                .join(", ");
             format!(
                 "tail call {}({}) [need={}, left={}]",
                 func.0, args_str, ghost_need.0, ghost_left.0

@@ -1,21 +1,37 @@
+use std::collections::HashMap;
+
 use crate::ghost::ir::{GhostExpr, GhostFnDef, GhostProgram, GhostStmt, GhostTail, GhostVar};
 use crate::ir::{Expr, FnDef, FnName, Op, Program, Stmt, Tail, Variable};
 use crate::Val;
 
 /// Synthesize a ghost-level program from the typed IR.
 pub fn synthesize_ghost_program<V: Variable>(prog: &Program<V>) -> GhostProgram<V> {
-    let mut prog = prog.clone();
-    prog.eliminate_array_params();
+    let array_param_indices = prog
+        .defs
+        .iter()
+        .map(|def| {
+            let indices = def
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, param)| param.ty.is_array_ref().then_some(index))
+                .collect();
+            (def.name.0.clone(), indices)
+        })
+        .collect::<HashMap<_, _>>();
 
     let mut ghost = GhostProgram::new();
     for def in &prog.defs {
-        ghost.add_fn(lower_fn(def));
+        ghost.add_fn(lower_fn(def, &array_param_indices));
     }
     ghost
 }
 
-fn lower_fn<V: Clone>(fn_def: &FnDef<V>) -> GhostFnDef<V> {
-    let mut lowerer = FunctionLowerer::new();
+fn lower_fn<V: Clone>(
+    fn_def: &FnDef<V>,
+    array_param_indices: &HashMap<String, Vec<usize>>,
+) -> GhostFnDef<V> {
+    let mut lowerer = FunctionLowerer::new(array_param_indices);
 
     let (ghost_params, initial_ctx) = {
         let sync = GhostVar("p_sync".into());
@@ -30,7 +46,18 @@ fn lower_fn<V: Clone>(fn_def: &FnDef<V>) -> GhostFnDef<V> {
 
     GhostFnDef {
         name: fn_def.name.clone(),
-        params: fn_def.params.clone(),
+        params: fn_def
+            .params
+            .iter()
+            .filter(|param| !param.ty.is_array_ref())
+            .cloned()
+            .collect(),
+        array_params: fn_def
+            .params
+            .iter()
+            .filter(|param| param.ty.is_array_ref())
+            .cloned()
+            .collect(),
         ghost_params,
         caps: fn_def.caps.clone(), // Preserve capability patterns
         returns: fn_def.returns.clone(),
@@ -83,15 +110,35 @@ impl PermCtx {
     }
 }
 
-struct FunctionLowerer {
+struct FunctionLowerer<'a> {
     names: GhostNameGenerator,
+    array_param_indices: &'a HashMap<String, Vec<usize>>,
 }
 
-impl FunctionLowerer {
-    fn new() -> Self {
+impl<'a> FunctionLowerer<'a> {
+    fn new(array_param_indices: &'a HashMap<String, Vec<usize>>) -> Self {
         Self {
             names: GhostNameGenerator::new(1),
+            array_param_indices,
         }
+    }
+
+    fn split_call_args<V: Clone>(&self, func: &FnName, args: &[V]) -> (Vec<V>, Vec<V>) {
+        let array_indices = self
+            .array_param_indices
+            .get(&func.0)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut value_args = Vec::new();
+        let mut array_args = Vec::new();
+        for (index, arg) in args.iter().cloned().enumerate() {
+            if array_indices.contains(&index) {
+                array_args.push(arg);
+            } else {
+                value_args.push(arg);
+            }
+        }
+        (value_args, array_args)
     }
 
     fn lower_expr<V: Clone>(&mut self, expr: &Expr<V>, mut ctx: PermCtx) -> GhostExpr<V> {
@@ -137,6 +184,7 @@ impl FunctionLowerer {
                 }
             }
             Tail::TailCall { func, args } => {
+                let (args, array_args) = self.split_call_args(func, args);
                 let mut ctx = ctx;
                 let (need_perm, _) = self.split_sync(builder, &mut ctx);
 
@@ -145,7 +193,8 @@ impl FunctionLowerer {
 
                 GhostTail::TailCall {
                     func: func.clone(),
-                    args: args.clone(),
+                    args,
+                    array_args,
                     ghost_need: need_perm,
                     ghost_left: left_perm,
                 }
@@ -252,6 +301,7 @@ impl FunctionLowerer {
         builder: &mut Vec<GhostStmt<V>>,
         ctx: &mut PermCtx,
     ) {
+        let (args, array_args) = self.split_call_args(func, args);
         let (need_perm, _) = self.split_sync(builder, ctx);
 
         let inputs = ctx.clear_and_get_garb();
@@ -262,7 +312,8 @@ impl FunctionLowerer {
         builder.push(GhostStmt::Call {
             outputs: vars.to_vec(),
             func: func.clone(),
-            args: args.to_vec(),
+            args,
+            array_args,
             ghost_need: need_perm.clone(),
             ghost_left: left_perm.clone(),
             ghost_ret: ret_perm.clone(),
