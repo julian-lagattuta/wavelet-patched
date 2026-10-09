@@ -33,6 +33,15 @@ def linkAtomicProc
   | .async aop inputs outputs =>
     [.async aop (inputs.map .main) (outputs.map .main)]
 
+/-- Function operators occurring at the static call sites in a process. -/
+def callTargets
+  [Arity Op]
+  {sigs : Sigs k} {k' : Fin (k + 1)}
+  (atoms : AtomicProcs (Op ⊕ SigOps sigs k') χ V) : List (SigOps sigs k') :=
+  atoms.filterMap fun
+    | .op (.inr op) _ _ => some op
+    | _ => none
+
 def linkProcs
   [Arity Op] [NeZeroArity Op]
   {sigs : Sigs k} [NeZeroSigs sigs]
@@ -42,7 +51,14 @@ def linkProcs
   : Proc Op (LinkName χ) V m n := {
     inputs := main.inputs.map LinkName.main,
     outputs := main.outputs.map LinkName.main,
-    atoms := (main.atoms.map (linkAtomicProc k' procs)).flatten,
+    atoms := if (callTargets main.atoms).Nodup then
+      (main.atoms.map (linkAtomicProc k' procs)).flatten
+    else
+      -- Keep the existing namespaces when every callee has one call site.
+      -- Repeated calls need a separate copy of the callee's channels per site.
+      (main.atoms.mapIdx fun site atom =>
+        linkAtomicProc k'
+          (fun i => (procs i).mapChans (LinkName.dep site)) atom).flatten,
   }
 
 /-- Given a program (a list of functions that non-recursively call each other),

@@ -97,6 +97,49 @@ theorem map_chans_has_no_token_const
     simp [AtomicProc.mapChans, AtomicProc.HasNoTokenConst]
     exact hntok _ hmem'
 
+private theorem link_atomic_proc_has_no_token_const
+  [Arity Op] [NeZeroArity Op]
+  {sigs : Sigs k} [NeZeroSigs sigs]
+  {k' : Fin (k + 1)}
+  {procs : (i : Fin k') → Proc Op (LinkName χ) (V ⊕ T) (sigs ↓i).ι (sigs ↓i).ω}
+  {atom : AtomicProc (Op ⊕ SigOps sigs k') (LinkName χ) (V ⊕ T)}
+  {ap : AtomicProc Op (LinkName χ) (V ⊕ T)}
+  (hntok_dep : ∀ i, (procs i).HasNoTokenConst)
+  (hntok_atom : atom.HasNoTokenConst)
+  (hmem : ap ∈ linkAtomicProc k' procs atom) : ap.HasNoTokenConst := by
+  cases atom with
+  | op o ins outs =>
+    cases o with
+    | inl o =>
+      simp [linkAtomicProc] at hmem
+      subst hmem
+      simp [AtomicProc.HasNoTokenConst]
+    | inr op =>
+      simp only [linkAtomicProc] at hmem
+      rw [List.mem_append] at hmem
+      rcases hmem with hmem | hmem
+      · rw [List.mem_append] at hmem
+        rcases hmem with hmem | hmem
+        · simp only [List.mem_singleton] at hmem
+          subst hmem
+          simp [AtomicProc.forward, AtomicProc.HasNoTokenConst, AsyncOp.HasNoTokenConst]
+        · simp [AtomicProcs.mapChans] at hmem
+          obtain ⟨ap', hap'_mem, rfl⟩ := hmem
+          cases ap' with
+          | op o' ins' outs' =>
+            simp [AtomicProc.mapChans, AtomicProc.HasNoTokenConst]
+          | async aop' ins' outs' =>
+            simp [AtomicProc.mapChans, AtomicProc.HasNoTokenConst]
+            exact hntok_dep op.toFin' _ hap'_mem
+      · simp only [List.mem_singleton] at hmem
+        subst hmem
+        simp [AtomicProc.forward, AtomicProc.HasNoTokenConst, AsyncOp.HasNoTokenConst]
+  | async aop ins outs =>
+    simp only [linkAtomicProc, List.mem_singleton] at hmem
+    subst hmem
+    simp only [AtomicProc.HasNoTokenConst]
+    exact hntok_atom
+
 theorem link_procs_has_no_token_const
   [Arity Op] [NeZeroArity Op]
   {sigs : Sigs k} [NeZeroSigs sigs]
@@ -105,46 +148,21 @@ theorem link_procs_has_no_token_const
   {main : Proc (Op ⊕ SigOps sigs k') (LinkName χ) (V ⊕ T) m n}
   (hntok_dep : ∀ i, (procs i).HasNoTokenConst)
   (hntok_main : main.HasNoTokenConst) :
-    (linkProcs k' procs main).HasNoTokenConst
-  := by
+    (linkProcs k' procs main).HasNoTokenConst := by
   intro ap hmem
   simp only [linkProcs] at hmem
-  rw [List.mem_flatten] at hmem
-  obtain ⟨l, hl_mem, hap_mem⟩ := hmem
-  rw [List.mem_map] at hl_mem
-  obtain ⟨atom, hatom_mem, rfl⟩ := hl_mem
-  cases atom with
-  | op o ins outs =>
-    cases o with
-    | inl o =>
-      simp [linkAtomicProc] at hap_mem
-      subst hap_mem
-      simp [AtomicProc.HasNoTokenConst]
-    | inr op =>
-      simp only [linkAtomicProc] at hap_mem
-      rw [List.mem_append] at hap_mem
-      rcases hap_mem with hap_mem | hap_mem
-      · rw [List.mem_append] at hap_mem
-        rcases hap_mem with hap_mem | hap_mem
-        · simp only [List.mem_singleton] at hap_mem
-          subst hap_mem
-          simp [AtomicProc.forward, AtomicProc.HasNoTokenConst, AsyncOp.HasNoTokenConst]
-        · simp [AtomicProcs.mapChans] at hap_mem
-          obtain ⟨ap', hap'_mem, rfl⟩ := hap_mem
-          cases ap' with
-          | op o' ins' outs' =>
-            simp [AtomicProc.mapChans, AtomicProc.HasNoTokenConst]
-          | async aop' ins' outs' =>
-            simp [AtomicProc.mapChans, AtomicProc.HasNoTokenConst]
-            exact hntok_dep op.toFin' _ hap'_mem
-      · simp only [List.mem_singleton] at hap_mem
-        subst hap_mem
-        simp [AtomicProc.forward, AtomicProc.HasNoTokenConst, AsyncOp.HasNoTokenConst]
-  | async aop ins outs =>
-    simp only [linkAtomicProc, List.mem_singleton] at hap_mem
-    subst hap_mem
-    simp only [AtomicProc.HasNoTokenConst]
-    exact hntok_main _ hatom_mem
+  split at hmem
+  · rw [List.mem_flatten] at hmem
+    obtain ⟨l, hl_mem, hap_mem⟩ := hmem
+    rw [List.mem_map] at hl_mem
+    obtain ⟨atom, hatom_mem, rfl⟩ := hl_mem
+    exact link_atomic_proc_has_no_token_const hntok_dep (hntok_main _ hatom_mem) hap_mem
+  · rw [List.mem_flatten] at hmem
+    obtain ⟨l, hl_mem, hap_mem⟩ := hmem
+    obtain ⟨site, hsite, rfl⟩ := List.mem_mapIdx.mp hl_mem
+    exact link_atomic_proc_has_no_token_const
+      (fun i => map_chans_has_no_token_const (hntok_dep i))
+      (hntok_main _ (List.mem_iff_getElem.mpr ⟨site, hsite, rfl⟩)) hap_mem
 
 theorem compile_prog_has_no_token_const
   [Arity Op] [NeZeroArity Op] [DecidableEq χ] [InterpConsts V]

@@ -4,6 +4,7 @@ import Wavelet.Thm.Data
 import Wavelet.Thm.Seq.AffineVar
 import Wavelet.Thm.Dataflow.AffineChan
 import Wavelet.Thm.Compile.AffineOp
+import Wavelet.Thm.Compile.Prog.CallSites
 import Wavelet.Thm.Compile.Fn.AffineVar
 
 import Mathlib.Data.List.Nodup
@@ -413,7 +414,7 @@ theorem link_procs_preserves_aff_var
     (linkProcs k' procs main).AffineChan
   := by
   obtain ⟨h_in, h_out, ⟨h_atom_nodup, h_atom_pw⟩, hdisj₁, hdisj₂⟩ := haff_main
-  simp only [Proc.AffineChan, linkProcs]
+  simp only [Proc.AffineChan, linkProcs, if_pos (callTargets_nodup_of_affine haff_calls)]
   refine ⟨?_, ?_, ⟨?_, ?_⟩, ?_, ?_⟩
   · rw [Vector.toList_map]; exact h_in.map (λ a b h => by injection h)
   · rw [Vector.toList_map]; exact h_out.map (λ a b h => by injection h)

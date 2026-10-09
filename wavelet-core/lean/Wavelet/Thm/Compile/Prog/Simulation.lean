@@ -4,6 +4,7 @@ import Wavelet.Thm.Semantics.Link
 import Wavelet.Thm.Compile.MapChans
 import Wavelet.Thm.Compile.Fn.Simulation
 import Wavelet.Thm.Compile.AffineOp
+import Wavelet.Thm.Compile.Prog.CallSites
 
 /-! SimRelulation proofs for `compileProg`. -/
 
@@ -298,6 +299,7 @@ private theorem sim_link_procs_step_dep_spawn
         depStates := Function.update s₁.depStates depOp depState' } s₂'
   := by
   have ⟨hsim_proc_inputs, hsim_proc_outputs, hsim_aff, hsim_proc, hsim_main, hsim_dep⟩ := hsim
+  have htargets := callTargets_nodup_of_affine hsim_aff
   have hsim_chans := hsim_main hcur
   have ⟨outputVals, mainState', hstep_main⟩ := hyield
   simp [Proc.semantics, Lts.Step] at hstep_dep hstep_main
@@ -311,7 +313,7 @@ private theorem sim_link_procs_step_dep_spawn
       ((procs depOp.toFin').inputs.map (LinkName.dep depOp.toFin))
     ∈ s₂.proc.atoms
     := by
-    simp [hsim_proc, linkProcs]
+    simp [hsim_proc, linkProcs, htargets]
     have := List.mem_of_getElem hget_op
     exists AtomicProc.op (Sum.inr depOp) inputs outputs
     simp [this, linkAtomicProc, hsim_proc_inputs]
@@ -342,7 +344,7 @@ private theorem sim_link_procs_step_dep_spawn
       · rw [Function.update_of_ne (Ne.symm hdep) _ _]
         simp [hsim_proc_outputs]
     · exact hsim_aff
-    · simp [hs₂', hsim_proc, linkProcs]
+    · simp [hs₂', hsim_proc, linkProcs, htargets]
       congr
       cases depOp with | call i =>
       funext i'
@@ -433,6 +435,7 @@ private theorem sim_link_procs_step_dep_ret
         depStates := Function.update s₁.depStates depOp depState' } s₂'
   := by
   have ⟨hsim_proc_inputs, hsim_proc_outputs, hsim_aff, hsim_proc, hsim_main, hsim_dep⟩ := hsim
+  have htargets := callTargets_nodup_of_affine hsim_aff
   have ⟨frame, hsim_chans⟩ := hsim_dep hcur
   have ⟨
     depIdx,
@@ -464,7 +467,7 @@ private theorem sim_link_procs_step_dep_ret
       (outputs.map .main)
     ∈ s₂.proc.atoms
     := by
-    simp [hsim_proc, linkProcs]
+    simp [hsim_proc, linkProcs, htargets]
     have := List.mem_of_getElem hget_op
     exists AtomicProc.op (Sum.inr depOp) inputs outputs
     simp [this, linkAtomicProc, hsim_proc_outputs]
@@ -499,7 +502,7 @@ private theorem sim_link_procs_step_dep_ret
       · rw [Function.update_of_ne (Ne.symm hdep) _ _]
         simp [hsim_proc_outputs]
     · exact hsim_aff
-    · simp [hs₂', hsim_proc, linkProcs]
+    · simp [hs₂', hsim_proc, linkProcs, htargets]
       congr
       cases depOp with | call i =>
       funext i'
@@ -623,6 +626,7 @@ private theorem sim_link_procs_step_main
       Dataflow.Config.Step.IORestrictedStep s₂ l' s₂' ∧
       SimRel { s₁ with mainState := mainState' } s₂' := by
   have ⟨hsim_proc_inputs, hsim_proc_outputs, hsim_aff, hsim_proc, hsim_main, hsim_dep⟩ := hsim
+  have htargets := callTargets_nodup_of_affine hsim_aff
   have hsim_chans := hsim_main hcur
   simp [Proc.semantics, Lts.Step] at hstep_main
   cases hstep_main with
@@ -637,8 +641,8 @@ private theorem sim_link_procs_step_main
         · exact hsim_proc_inputs
         · exact hsim_proc_outputs
         · exact hsim_aff
-        · simp [hsim_proc]
-        · simp [hsim_chans, hsim_proc, linkProcs]
+        · simp [hsim_proc, linkProcs, htargets]
+        · simp [hsim_chans, hsim_proc, linkProcs, htargets]
           intros
           simp [sim_link_procs_push_vals_main]
         · simp [hcur]
@@ -648,7 +652,7 @@ private theorem sim_link_procs_step_main
     have hstep_s₂ : Dataflow.Config.Step s₂ (.output _) _
       := Dataflow.Config.Step.step_output
         (by
-          simp [hsim_proc, hsim_chans, linkProcs]
+          simp [hsim_proc, hsim_chans, linkProcs, htargets]
           apply sim_link_procs_pop_vals_main hpop)
     exact ⟨_, .single hstep_s₂,
       by
@@ -656,7 +660,7 @@ private theorem sim_link_procs_step_main
         · exact hsim_proc_inputs
         · exact hsim_proc_outputs
         · exact hsim_aff
-        · simp [hsim_proc]
+        · simp [hsim_proc, linkProcs, htargets]
         · simp
         · simp [hcur]
     ⟩
@@ -669,7 +673,7 @@ private theorem sim_link_procs_step_main
         (inputs := inputs.map LinkName.main)
         (outputs := outputs.map LinkName.main)
         (by
-          simp [hsim_proc]
+          simp only [hsim_proc, linkProcs, if_pos htargets]
           apply List.mem_flatten_map hmem_op
           simp [linkAtomicProc])
         (by
@@ -683,8 +687,8 @@ private theorem sim_link_procs_step_main
       · exact hsim_proc_inputs
       · exact hsim_proc_outputs
       · exact hsim_aff
-      · simp [hs₂', hsim_proc]
-      · simp [hs₂', hsim_proc, linkProcs]
+      · simp [hs₂', hsim_proc, linkProcs, htargets]
+      · simp [hs₂', hsim_proc, linkProcs, htargets]
         intros
         simp [sim_link_procs_push_vals_main]
       · simp [hs₂', hcur]
@@ -712,8 +716,8 @@ private theorem sim_link_procs_step_main
         (allOutputs := allOutputs.map .main)
         (inputs := inputs.map .main)
         (outputs := outputs.map .main)
-        (by simp only [hsim_proc, linkProcs]; exact hi')
-        (by simp [hsim_proc, linkProcs]; exact hget')
+        (by simp only [hsim_proc, linkProcs, htargets]; exact hi')
+        (by simp [hsim_proc, linkProcs, htargets]; exact hget')
         (aop_interp_map_inj .main hinterp)
         (by
           simp [hsim_chans]
@@ -730,7 +734,18 @@ private theorem sim_link_procs_step_main
           split at hget₁ <;> split at hget₂
           any_goals contradiction
           exact hsim_aff hne hi hj hget₁ hget₂
-        · simp [hsim_proc, linkProcs]
+        · have htargets' := callTargets_nodup_of_affine
+            (main := { s₁.mainState.proc with
+              atoms := s₁.mainState.proc.atoms.set i (.async aop' allInputs allOutputs) })
+            (by
+              simp [Proc.AffineInrOp]
+              intros
+              rename_i hne hi hj hget₁ hget₂
+              simp [List.getElem_set] at hget₁ hget₂
+              split at hget₁ <;> split at hget₂
+              any_goals contradiction
+              exact hsim_aff hne hi hj hget₁ hget₂)
+          simp [hsim_proc, linkProcs, htargets, htargets']
           rw [hupdate]
           congr
         · simp
@@ -764,6 +779,7 @@ private theorem sim_link_procs_step_dep
         depStates := Function.update s₁.depStates depOp depState' } s₂'
   := by
   have ⟨hsim_proc_inputs, hsim_proc_outputs, hsim_aff, hsim_proc, hsim_main, hsim_dep⟩ := hsim
+  have htargets := callTargets_nodup_of_affine hsim_aff
   have ⟨frame, hsim_chans⟩ := hsim_dep hcur
   simp [Proc.semantics, Lts.Step] at hstep_dep
   cases hstep_dep with
@@ -780,7 +796,7 @@ private theorem sim_link_procs_step_dep
           SimRel.linkChans frame.chans'
             (Function.update (λ i => (s₁.depStates (SigOps.call i)).chans) depOp.1 chans'))
         (by
-          simp [hsim_proc]
+          simp only [hsim_proc, linkProcs, if_pos htargets]
           apply List.mem_flatten_map (List.mem_of_getElem frame.get_op)
           simp [linkAtomicProc, AtomicProcs.mapChans, AtomicProc.forward]
           exists AtomicProc.op op inputs outputs)
@@ -807,7 +823,7 @@ private theorem sim_link_procs_step_dep
         · simp [Ne.symm hdep]
           simp [hsim_proc_outputs]
       · exact hsim_aff
-      · simp [hs₂', hsim_proc, linkProcs]
+      · simp [hs₂', hsim_proc, linkProcs, htargets]
         congr
         cases depOp with | call i =>
         funext i'
@@ -858,9 +874,9 @@ private theorem sim_link_procs_step_dep
         (allOutputs := allOutputs.map (.dep depOp.toFin))
         (inputs := inputs.map (.dep depOp.toFin))
         (outputs := outputs.map (.dep depOp.toFin))
-        (by simp only [hsim_proc, linkProcs]; exact hi')
+        (by simp only [hsim_proc, linkProcs, htargets]; exact hi')
         (by
-          simp [hsim_proc, linkProcs]
+          simp [hsim_proc, linkProcs, htargets]
           rw [hget']
           simp [AtomicProcs.mapChans, AtomicProc.mapChans, hi, hget])
         (aop_interp_map_inj (.dep depOp.toFin) hinterp)
@@ -885,7 +901,7 @@ private theorem sim_link_procs_step_dep
           · simp [Ne.symm hdep]
             simp [hsim_proc_outputs]
         · exact hsim_aff
-        · simp [hsim_proc, linkProcs]
+        · simp [hsim_proc, linkProcs, htargets]
           rw [hupdate]
           congr
           apply List.ext_get
