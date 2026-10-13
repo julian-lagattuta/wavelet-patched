@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use wavelet_elab::check::{check_fn_with_options, CheckOptions};
 use wavelet_elab::env::FnRegistry;
-use wavelet_elab::ir::FnDef;
+use wavelet_elab::ir::{FnDef, Signedness, Stmt, Tail, Ty};
 use wavelet_elab::logic::syntactic::SyntacticLogic;
 use wavelet_elab::SemanticLogic;
-use wavelet_elab::{parse_program, UntypedVar};
+use wavelet_elab::{infer_program, parse_program, UntypedVar};
 
 // Define the fence macro as a no-op for parsing
 #[allow(unused_macros)]
@@ -385,3 +385,287 @@ fixture_parser_test!(
     entry = "copy_entry",
     extra = ["copy_all"]
 );
+
+#[test]
+fn positive_literal_infers_signed_return_type() {
+    let def = parse_fn_by_name("fn inferred() -> i32 { let zero = 0; zero }", "inferred");
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let typed = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    )
+    .unwrap();
+    let Stmt::LetVal { var, .. } = &typed.body.stmts[0] else {
+        panic!("expected literal binding");
+    };
+    assert_eq!(var.ty, Ty::Int(Signedness::Signed));
+}
+
+#[test]
+fn public_infer_program_does_not_check_capabilities() {
+    let program =
+        parse_program("fn load(A: &[i32; 1]) -> i32 { let value = A[0]; value }").unwrap();
+    let typed = infer_program(&program).unwrap();
+    let Stmt::LetOp { vars, .. } = &typed.defs[0].body.stmts[1] else {
+        panic!("expected load statement");
+    };
+    assert_eq!(vars[0].ty, Ty::Int(Signedness::Signed));
+}
+
+#[test]
+fn public_infer_program_accepts_interleaved_array_parameters() {
+    let mut program = parse_program(
+        "fn callee(x: i32, y: i32, A: &[i32; 1]) -> i32 { x }\
+         fn caller(x: i32, y: i32, A: &[i32; 1]) -> i32 { callee(x, y, A) }",
+    )
+    .unwrap();
+
+    program.defs[0].params.swap(1, 2);
+    let Tail::TailCall { args, .. } = &mut program.defs[1].body.tail else {
+        panic!("expected tail call");
+    };
+    args.swap(1, 2);
+
+    infer_program(&program).unwrap();
+}
+
+#[test]
+fn unconstrained_positive_literal_defaults_unsigned() {
+    let def = parse_fn_by_name("fn inferred() -> u32 { let zero = 0; zero }", "inferred");
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let typed = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    )
+    .unwrap();
+    let Stmt::LetVal { var, .. } = &typed.body.stmts[0] else {
+        panic!("expected literal binding");
+    };
+    assert_eq!(var.ty, Ty::Int(Signedness::Unsigned));
+}
+
+#[test]
+fn call_context_types_literal() {
+    let defs = parse_fixture("fn identity(x: i32) -> i32 { x } fn caller() -> i32 { identity(0) }");
+    let caller = defs["caller"].clone();
+    let mut registry = FnRegistry::default();
+    for def in defs.into_values() {
+        registry.insert(def);
+    }
+    let typed = check_fn_with_options(
+        &caller,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    )
+    .unwrap();
+    let Stmt::LetVal { var, .. } = &typed.body.stmts[0] else {
+        panic!("expected parser-generated literal binding");
+    };
+    assert_eq!(var.ty, Ty::Int(Signedness::Signed));
+}
+
+#[test]
+fn branch_context_types_both_literals() {
+    let def = parse_fn_by_name(
+        "fn choose(c: bool) -> i32 { if c { 0 } else { 1 } }",
+        "choose",
+    );
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let typed = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    )
+    .unwrap();
+    let wavelet_elab::Tail::IfElse { then_e, else_e, .. } = &typed.body.tail else {
+        panic!("expected conditional tail");
+    };
+    for branch in [then_e, else_e] {
+        let Stmt::LetVal { var, .. } = &branch.stmts[0] else {
+            panic!("expected literal binding");
+        };
+        assert_eq!(var.ty, Ty::Int(Signedness::Signed));
+    }
+}
+
+#[test]
+fn arithmetic_unifies_operand_and_result_types() {
+    let def = parse_fn_by_name(
+        "fn add() -> i32 { let x = 0; let y = 1; let z = x + y; z }",
+        "add",
+    );
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let typed = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    )
+    .unwrap();
+    let Stmt::LetOp { vars, .. } = &typed.body.stmts[2] else {
+        panic!("expected addition");
+    };
+    assert!(vars.iter().all(|var| var.ty == Ty::Int(Signedness::Signed)));
+}
+
+#[test]
+fn negative_literal_cannot_be_unsigned() {
+    let def = parse_fn_by_name("fn invalid() -> u32 { let n = -1; n }", "invalid");
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let result = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    );
+    assert!(matches!(
+        result,
+        Err(wavelet_elab::TypeError::TypeMismatch { .. })
+    ));
+}
+
+#[test]
+fn mixed_signedness_operation_is_rejected() {
+    let def = parse_fn_by_name(
+        "fn invalid(x: i32, y: u32) -> i32 { let z = x + y; z }",
+        "invalid",
+    );
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let result = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    );
+    assert!(matches!(
+        result,
+        Err(wavelet_elab::TypeError::TypeMismatch { .. })
+    ));
+}
+
+#[test]
+fn conflicting_literal_contexts_are_rejected() {
+    let defs = parse_fixture(
+        "
+        fn signed(x: i32) -> i32 { x }
+        fn unsigned(x: u32) -> u32 { x }
+        fn conflict() -> u32 {
+            let x = 0;
+            let ignored = signed(x);
+            unsigned(x)
+        }
+        ",
+    );
+    let conflict = defs["conflict"].clone();
+    let mut registry = FnRegistry::default();
+    for def in defs.into_values() {
+        registry.insert(def);
+    }
+    let result = check_fn_with_options(
+        &conflict,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    );
+    assert!(matches!(
+        result,
+        Err(wavelet_elab::TypeError::TypeMismatch { .. })
+    ));
+}
+
+#[test]
+fn shadowed_literals_are_inferred_independently() {
+    let def = parse_fn_by_name(
+        "fn shadowed() -> i32 { let x = 0; let x = 1; x }",
+        "shadowed",
+    );
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let typed = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    )
+    .unwrap();
+    let Stmt::LetVal { var: first, .. } = &typed.body.stmts[0] else {
+        panic!("expected first literal");
+    };
+    let Stmt::LetVal { var: second, .. } = &typed.body.stmts[1] else {
+        panic!("expected second literal");
+    };
+    assert_eq!(first.ty, Ty::Int(Signedness::Unsigned));
+    assert_eq!(second.ty, Ty::Int(Signedness::Signed));
+}
+
+#[test]
+fn mixed_signedness_comparison_is_rejected() {
+    let def = parse_fn_by_name(
+        "fn invalid(x: i32, y: u32) -> bool { let c = x < y; c }",
+        "invalid",
+    );
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let result = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    );
+    assert!(matches!(
+        result,
+        Err(wavelet_elab::TypeError::TypeMismatch { .. })
+    ));
+}
+
+#[test]
+fn mixed_signedness_store_is_rejected_before_capability_checking() {
+    let def = parse_fn_by_name(
+        "#[cap(A: uniq @ 0..1)] fn invalid(x: u32, A: &mut [i32; 1]) { A[0] = x; () }",
+        "invalid",
+    );
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let result = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    );
+    assert!(matches!(
+        result,
+        Err(wavelet_elab::TypeError::TypeMismatch { .. })
+    ));
+}
+
+#[test]
+fn shift_count_may_have_independent_signedness() {
+    let def = parse_fn_by_name(
+        "fn shifted(x: i32, amount: usize) -> i32 { let y = x >> amount; y }",
+        "shifted",
+    );
+    let mut registry = FnRegistry::default();
+    registry.insert(def.clone());
+    let result = check_fn_with_options(
+        &def,
+        &registry,
+        &SyntacticLogic::default(),
+        CheckOptions::default(),
+    );
+    assert!(
+        result.is_ok(),
+        "shift count is independently typed: {result:?}"
+    );
+}

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::env::{Ctx, FnRegistry};
 use crate::error::TypeError;
+use crate::infer::{infer_fn_types, InferredTypes};
 use crate::ir::{
     Expr, FnDef, Op, Program, Signedness, Stmt, Tail, Ty, TypedVar, UntypedVar, Val, Variable,
 };
@@ -142,23 +143,12 @@ where
         .iter()
         .zip(args.iter().take(expected_value_args))
     {
-        let mut arg_ty = ctx.ty_of(arg_var)?;
+        let arg_ty = ctx.ty_of(arg_var)?;
         if arg_ty != param.ty {
-            let both_int = matches!(arg_ty, Ty::Int(_)) && matches!(param.ty, Ty::Int(_));
-            if both_int {
-                if arg_var.0.starts_with("_lit_") {
-                    ctx.bind_var(&arg_var.0, param.ty.clone());
-                    arg_ty = param.ty.clone();
-                } else {
-                    arg_ty = param.ty.clone();
-                }
-            }
-            if arg_ty != param.ty {
-                return Err(TypeError::TypeMismatch {
-                    expected: TypeError::type_name(&param.ty),
-                    found: TypeError::type_name(&arg_ty),
-                });
-            }
+            return Err(TypeError::TypeMismatch {
+                expected: TypeError::type_name(&param.ty),
+                found: TypeError::type_name(&arg_ty),
+            });
         }
         subst_map.insert(param.name.clone(), arg_var.0.clone());
         typed_args.push(arg_var.add_type(arg_ty));
@@ -211,13 +201,6 @@ fn or(lhs: Atom, rhs: Atom) -> Atom {
 
 fn not(atom: Atom) -> Atom {
     Atom::Not(Box::new(atom))
-}
-
-fn combine_signedness(a: Signedness, b: Signedness) -> Signedness {
-    match (a, b) {
-        (Signedness::Unsigned, Signedness::Unsigned) => Signedness::Unsigned,
-        _ => Signedness::Signed,
-    }
 }
 
 impl<'logic, L: CapabilityLogic> Ctx<'logic, L>
@@ -334,6 +317,7 @@ pub fn check_fn_with_options<L: CapabilityLogic>(
 where
     L::Region: RegionModel,
 {
+    let inferred = infer_fn_types(def, registry)?;
     // Initialise context with parameter types.
     logic.set_query_logging(options.log_solver_queries);
     trace_function_header(def, options.verbose);
@@ -351,7 +335,7 @@ where
     trace_context(&ctx, "Initial context after parameter and capability setup");
 
     // Check body.
-    let result = check_expr(&mut ctx, &def.body, &def.returns, registry);
+    let result = check_expr(&mut ctx, &def.body, &def.returns, registry, &inferred);
     if result.is_ok() {
         trace_context(&ctx, "Context after function body");
     }
@@ -372,6 +356,7 @@ fn check_expr<L: CapabilityLogic>(
     expr: &Expr<UntypedVar>,
     expected: &Ty,
     registry: &FnRegistry,
+    inferred: &InferredTypes,
 ) -> Result<Expr<TypedVar>, TypeError>
 where
     L::Region: RegionModel,
@@ -383,7 +368,7 @@ where
     for (index, stmt) in expr.stmts.iter().enumerate() {
         trace_step(ctx, &format!("stmt {index}: {}", render_stmt(stmt)));
         let snapshot = capture_trace_snapshot(ctx);
-        typed_stmts.push(check_stmt(ctx, stmt, registry)?);
+        typed_stmts.push(check_stmt(ctx, stmt, registry, inferred)?);
         print_statement_transition(
             ctx,
             &snapshot,
@@ -394,7 +379,7 @@ where
     trace_step(ctx, &format!("tail: {}", render_tail(&expr.tail)));
 
     // Check tail.
-    let (ty, typed_tail) = check_tail(ctx, &expr.tail, registry)?;
+    let (ty, typed_tail) = check_tail(ctx, &expr.tail, registry, inferred)?;
 
     trace_step(ctx, &format!("tail result: {}", render_ty(&ty)));
 
@@ -416,6 +401,7 @@ fn check_branch_expr<L: CapabilityLogic>(
     ctx: &mut Ctx<L>,
     expr: &Expr<UntypedVar>,
     registry: &FnRegistry,
+    inferred: &InferredTypes,
 ) -> Result<(Ty, Expr<TypedVar>), TypeError>
 where
     L::Region: RegionModel,
@@ -427,7 +413,7 @@ where
     for (index, stmt) in expr.stmts.iter().enumerate() {
         trace_step(ctx, &format!("branch stmt {index}: {}", render_stmt(stmt)));
         let snapshot = capture_trace_snapshot(ctx);
-        typed_stmts.push(check_stmt(ctx, stmt, registry)?);
+        typed_stmts.push(check_stmt(ctx, stmt, registry, inferred)?);
         print_statement_transition(
             ctx,
             &snapshot,
@@ -438,7 +424,7 @@ where
     trace_step(ctx, &format!("branch tail: {}", render_tail(&expr.tail)));
 
     // Check tail and return its type.
-    let (ty, typed_tail) = check_tail(ctx, &expr.tail, registry)?;
+    let (ty, typed_tail) = check_tail(ctx, &expr.tail, registry, inferred)?;
 
     trace_step(ctx, &format!("branch result type: {}", render_ty(&ty)));
 
@@ -456,24 +442,14 @@ fn check_stmt<L: CapabilityLogic>(
     ctx: &mut Ctx<L>,
     stmt: &Stmt<UntypedVar>,
     registry: &FnRegistry,
+    inferred: &InferredTypes,
 ) -> Result<Stmt<TypedVar>, TypeError>
 where
     L::Region: RegionModel,
 {
     match stmt {
         Stmt::LetVal { var, val, fence } => {
-            // Determine literal type and bind it.
-            let ty = match val {
-                Val::Int(n) => {
-                    if *n >= 0 {
-                        Ty::Int(Signedness::Unsigned)
-                    } else {
-                        Ty::Int(Signedness::Signed)
-                    }
-                }
-                Val::Bool(_) => Ty::Bool,
-                Val::Unit => Ty::Unit,
-            };
+            let ty = inferred.get(var)?;
             ctx.bind_var(&var.0, ty.clone());
             match val {
                 Val::Int(n) => ctx
@@ -502,9 +478,13 @@ where
                     }
                     let x_ty = ctx.ty_of(&vars[0])?;
                     let y_ty = ctx.ty_of(&vars[1])?;
+                    if x_ty != y_ty || !x_ty.is_int() {
+                        return Err(TypeError::InvalidOp {
+                            op: format!("{:?}", op),
+                        });
+                    }
                     let x_sign = x_ty.signedness().unwrap();
-                    let y_sign = y_ty.signedness().unwrap();
-                    let result_sign = combine_signedness(x_sign, y_sign);
+                    let result_sign = x_sign;
                     // Add fact to Phi for Add/Sub/Mul operations.
                     let x_idx = Idx::Var(vars[0].0.clone());
                     let y_idx = Idx::Var(vars[1].0.clone());
@@ -642,9 +622,13 @@ where
                             op: format!("{:?}", op),
                         });
                     }
+                    if x_ty != y_ty {
+                        return Err(TypeError::InvalidOp {
+                            op: format!("{:?}", op),
+                        });
+                    }
                     let x_sign = x_ty.signedness().unwrap();
-                    let y_sign = y_ty.signedness().unwrap();
-                    let result_sign = combine_signedness(x_sign, y_sign);
+                    let result_sign = x_sign;
                     ctx.bind_var(&vars[2].0, Ty::Int(result_sign));
                     finalize_statement(ctx, stmt);
                     Ok(Stmt::LetOp {
@@ -676,6 +660,7 @@ where
                         });
                     }
                     let x_sign = x_ty.signedness().unwrap();
+                    // Shift counts have an independent integer type.
                     ctx.bind_var(&vars[2].0, Ty::Int(x_sign));
                     finalize_statement(ctx, stmt);
                     Ok(Stmt::LetOp {
@@ -712,9 +697,13 @@ where
                             op: format!("{:?}", op),
                         });
                     }
+                    if x_ty != y_ty {
+                        return Err(TypeError::InvalidOp {
+                            op: format!("{:?}", op),
+                        });
+                    }
                     let x_sign = x_ty.signedness().unwrap();
-                    let y_sign = y_ty.signedness().unwrap();
-                    let result_sign = combine_signedness(x_sign, y_sign);
+                    let result_sign = x_sign;
                     // Record the comparison as a fact in Phi.
                     let x_idx = Idx::Var(vars[0].0.clone());
                     let y_idx = Idx::Var(vars[1].0.clone());
@@ -761,13 +750,7 @@ where
                     }
                     let x_ty = ctx.ty_of(&vars[0])?;
                     let y_ty = ctx.ty_of(&vars[1])?;
-                    // Allow comparison between integers of different signedness
-                    // or exact type equality for other types
-                    let types_compatible = match (&x_ty, &y_ty) {
-                        (Ty::Int(_), Ty::Int(_)) => true,
-                        _ => x_ty == y_ty,
-                    };
-                    if !types_compatible {
+                    if x_ty != y_ty {
                         return Err(TypeError::InvalidOp {
                             op: format!("{:?}", op),
                         });
@@ -954,15 +937,9 @@ where
                     };
                     let val_ty = ctx.ty_of(value)?;
                     if val_ty != elem_ty {
-                        match (&val_ty, &elem_ty) {
-                            (Ty::Int(val_sign), Ty::Int(elem_sign))
-                                if combine_signedness(*val_sign, *elem_sign) == *elem_sign => {}
-                            _ => {
-                                return Err(TypeError::InvalidOp {
-                                    op: "store value type".into(),
-                                });
-                            }
-                        }
+                        return Err(TypeError::InvalidOp {
+                            op: "store value type".into(),
+                        });
                     }
                     let op_len = len.clone();
                     if arr_len != op_len {
@@ -1094,6 +1071,7 @@ fn check_tail<L: CapabilityLogic>(
     ctx: &mut Ctx<L>,
     tail: &Tail<UntypedVar>,
     registry: &FnRegistry,
+    inferred: &InferredTypes,
 ) -> Result<(Ty, Tail<TypedVar>), TypeError>
 where
     L::Region: RegionModel,
@@ -1138,21 +1116,14 @@ where
             };
             ctx_el.phi.push(not(bool_atom(&cond.0)));
             // Type check both branches and compare their result types.
-            let (ty_then, typed_then) = check_branch_expr(&mut ctx_th, then_e, registry)?;
-            let (ty_else, typed_else) = check_branch_expr(&mut ctx_el, else_e, registry)?;
+            let (ty_then, typed_then) = check_branch_expr(&mut ctx_th, then_e, registry, inferred)?;
+            let (ty_else, typed_else) = check_branch_expr(&mut ctx_el, else_e, registry, inferred)?;
             let typed_tail = Tail::IfElse {
                 cond: cond.add_type(Ty::Bool),
                 then_e: typed_then.into(),
                 else_e: typed_else.into(),
             };
             if ty_then != ty_else {
-                if ty_then.is_int() && ty_else.is_int() {
-                    let combined = Ty::Int(combine_signedness(
-                        ty_then.signedness().unwrap(),
-                        ty_else.signedness().unwrap(),
-                    ));
-                    return Ok((combined, typed_tail));
-                }
                 return Err(TypeError::TypeMismatch {
                     expected: TypeError::type_name(&ty_then),
                     found: TypeError::type_name(&ty_else),
